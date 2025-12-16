@@ -3,28 +3,28 @@ import type React from "react";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Daily Boggle",
-  description: "A simple daily Boggle-like game (local only).",
+title: "Daily Boggle",
+description: "A simple daily Boggle-like game (local only).",
 };
 
 export default function RootLayout({
-  children,
+children,
 }: {
-  children: React.ReactNode;
+children: React.ReactNode;
 }) {
-  return (
-    <html lang="en">
-      <body>
+return (
+<html lang="en">
+<body>
         <div className="app-container">
           <header className="app-header">
             <div className="app-title">Daily Boggle</div>
             <div className="app-subtitle">
               One 2-minute round per day (local only)
             </div>
-          </header>
+</header>
           <main className="app-main">{children}</main>
-        </div>
-      </body>
-    </html>
-  );
+</div>
+</body>
+</html>
+);
 }

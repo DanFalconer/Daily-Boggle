@@ -1,0 +1,12 @@
+# ENABLE word list placeholder for Daily Boggle
+# Download the full ENABLE word list from:
+# https://raw.githubusercontent.com/dolph/dictionary/master/enable1.txt
+# and replace this file's contents with that list (one lowercase word per line).
+
+bee
+bee
+fab
+queen
+word
+words
+

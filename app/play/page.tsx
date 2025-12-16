@@ -9,6 +9,11 @@ interface SolverData {
   allWords: string[];
 }
 
+interface DateInfo {
+  key: string;
+  label: string;
+}
+
 interface GameResult {
   score: number;
   foundWords: string[];
@@ -183,25 +188,33 @@ function solveGrid(grid: Grid, dict: Set<string>, prefixes: Set<string>): Solver
   return { allWords };
 }
 
-function useParisDateKey(): string | null {
-  const [dateKey, setDateKey] = useState<string | null>(null);
+function useParisDateInfo(): DateInfo | null {
+  const [info, setInfo] = useState<DateInfo | null>(null);
 
   useEffect(() => {
     const now = new Date();
-    const fmt = new Intl.DateTimeFormat("en-CA", {
+    const keyFmt = new Intl.DateTimeFormat("en-CA", {
       timeZone: "Europe/Paris",
       year: "numeric",
       month: "2-digit",
       day: "2-digit",
     });
-    const parts = fmt.formatToParts(now);
+    const labelFmt = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Europe/Paris",
+      year: "numeric",
+      month: "long",
+      day: "2-digit",
+    });
+    const parts = keyFmt.formatToParts(now);
     const y = parts.find((p) => p.type === "year")?.value ?? "1970";
     const m = parts.find((p) => p.type === "month")?.value ?? "01";
     const d = parts.find((p) => p.type === "day")?.value ?? "01";
-    setDateKey(`${y}-${m}-${d}`);
+    const key = `${y}-${m}-${d}`;
+    const label = labelFmt.format(now);
+    setInfo({ key, label });
   }, []);
 
-  return dateKey;
+  return info;
 }
 
 async function loadDictionaryOnce(): Promise<{
@@ -223,7 +236,8 @@ function formatSeconds(total: number): string {
 const STORAGE_PREFIX = "daily-boggle-result-";
 
 export default function PlayPage() {
-  const dateKey = useParisDateKey();
+  const dateInfo = useParisDateInfo();
+  const dateKey = dateInfo?.key ?? null;
 
   const [dictLoaded, setDictLoaded] = useState(false);
   const [dict, setDict] = useState<Set<string> | null>(null);
@@ -255,14 +269,18 @@ export default function PlayPage() {
 
   const puzzleId = dateKey ? `${dateKey}-v1` : null;
 
-  const [grid, solver] = useMemo((): [Grid | null, SolverData | null] => {
-    if (!puzzleId || !dict || !prefixes) return [null, null];
-    const seed = hashStringToSeed(puzzleId);
-    const rng = mulberry32(seed);
-    const g = generateGrid(rng);
-    const s = solveGrid(g, dict, prefixes);
-    return [g, s];
-  }, [puzzleId, dict, prefixes]);
+  const [grid, solver, validWordSet] = useMemo(
+    (): [Grid | null, SolverData | null, Set<string> | null] => {
+      if (!puzzleId || !dict || !prefixes) return [null, null, null];
+      const seed = hashStringToSeed(puzzleId);
+      const rng = mulberry32(seed);
+      const g = generateGrid(rng);
+      const s = solveGrid(g, dict, prefixes);
+      const validSet = new Set(s.allWords);
+      return [g, s, validSet];
+    },
+    [puzzleId, dict, prefixes]
+  );
 
   const [selected, setSelected] = useState<number[]>([]);
   const [score, setScore] = useState(0);
@@ -274,6 +292,10 @@ export default function PlayPage() {
   const [finished, setFinished] = useState(false);
 
   const [restoredResult, setRestoredResult] = useState<GameResult | null>(null);
+  const [playerName, setPlayerName] = useState<string>("");
+  const [nameInput, setNameInput] = useState<string>("");
+  const [showNameModal, setShowNameModal] = useState<boolean>(true);
+  const [gameReady, setGameReady] = useState<boolean>(false);
 
   // Check if already played today
   useEffect(() => {
@@ -352,34 +374,42 @@ export default function PlayPage() {
 
   const handleSubmit = () => {
     if (!running || finished) return;
+    if (!solver || !validWordSet) return;
+
     const word = normalizeWord(currentWord);
+
     if (word.length < 3) {
       setSubmissions((prev) => [
         {
           word: currentWord || "(too short)",
-          delta: 0,
+          delta: -1,
           status: "invalid",
         },
         ...prev,
       ]);
+      setScore((prev) => Math.max(0, prev - 1));
       setSelected([]);
       return;
     }
+
     let delta = 0;
     let status: Submission["status"] = "invalid";
 
-    // Treat any length-3+ word that can be built from the tiles as valid.
     if (foundWords.has(word)) {
+      // Duplicate
       delta = -1;
       status = "duplicate";
-    } else {
+    } else if (validWordSet.has(word)) {
+      // Valid new word: in dictionary AND formable on this grid
       delta = word.length - 2;
       status = "new";
+    } else {
+      // Invalid word
+      delta = -1;
+      status = "invalid";
     }
 
-    if (delta !== 0 || status !== "invalid") {
-      setScore((prev) => prev + delta);
-    }
+    setScore((prev) => Math.max(0, prev + delta));
 
     setSubmissions((prev) => [
       { word, delta, status },
@@ -398,7 +428,7 @@ export default function PlayPage() {
   };
 
   const handleStart = () => {
-    if (!grid || !dictLoaded) return;
+    if (!grid || !dictLoaded || !gameReady) return;
     if (restoredResult) return;
     setTimeLeft(GAME_SECONDS);
     setScore(0);
@@ -445,7 +475,7 @@ export default function PlayPage() {
           <div className="pill">
             <span className="pill-label">Puzzle</span>
             <span className="pill-value">
-              {dateKey ?? "Loading..."}
+              {dateInfo?.label ?? "Loading..."}
             </span>
           </div>
         </div>
@@ -460,6 +490,44 @@ export default function PlayPage() {
           </div>
         </div>
       </div>
+
+      {!showNameModal && playerName && (
+        <div className="player-name-banner">
+          Playing as <strong>{playerName}</strong>
+        </div>
+      )}
+
+      {showNameModal && (
+        <div className="name-modal-backdrop">
+          <div className="name-modal">
+            <div className="name-modal-title">Welcome to Daily Boggle</div>
+            <div className="name-modal-subtitle">
+              Enter your name to get today&apos;s puzzle.
+            </div>
+            <input
+              className="name-input"
+              type="text"
+              value={nameInput}
+              onChange={(e) => setNameInput(e.target.value)}
+              placeholder="Enter your name"
+            />
+            <button
+              type="button"
+              className="btn btn-primary name-continue"
+              onClick={() => {
+                const trimmed = nameInput.trim();
+                if (!trimmed) return;
+                setPlayerName(trimmed);
+                setShowNameModal(false);
+                setGameReady(true);
+              }}
+              disabled={!nameInput.trim()}
+            >
+              Continue
+            </button>
+          </div>
+        </div>
+      )}
 
       {finished && (
         <div className="finish-banner">
@@ -477,21 +545,28 @@ export default function PlayPage() {
         </div>
       )}
 
-      {!grid && (
+      {!showNameModal && !grid && (
         <div style={{ fontSize: "0.9rem", opacity: 0.7 }}>
           Preparing today&apos;s puzzle…
         </div>
       )}
 
-      {grid && (
+      {!showNameModal && grid && (
         <>
           <div className="game-grid">
+            {!running && !finished && (
+              <div className="grid-overlay-text">
+                Ready to play? Tap Start to reveal today&apos;s letters.
+              </div>
+            )}
             {grid.map((tile, idx) => {
               const isSelected = selected.includes(idx);
+              const showLetters = running || finished;
               const classes = [
                 "tile",
                 isSelected ? "selected" : "",
                 !canInteract ? "disabled" : "",
+                !showLetters ? "tile-hidden" : "",
               ]
                 .filter(Boolean)
                 .join(" ");
@@ -507,7 +582,7 @@ export default function PlayPage() {
                   onClick={() => handleTileClick(idx)}
                   disabled={!canInteract}
                 >
-                  <span>{tile}</span>
+                  <span>{showLetters ? tile : ""}</span>
                   {order !== null && (
                     <span className="tile-index">{order}</span>
                   )}
@@ -583,17 +658,30 @@ export default function PlayPage() {
                       {s.word.toUpperCase()}
                     </span>
                     <span className="submission-meta">
-                      {s.status === "invalid"
-                        ? "invalid"
-                        : s.status === "duplicate"
-                        ? "-1"
-                        : `+${s.delta}`}
+                      {s.delta > 0 ? `+${s.delta}` : s.delta}
                     </span>
                   </div>
                 );
               })
             )}
           </div>
+
+          {foundWords.size > 0 && (
+            <div className="found-words-live">
+              <div className="found-words-title">
+                Found words ({foundWords.size})
+              </div>
+              <div className="found-words-chips">
+                {Array.from(foundWords)
+                  .sort((a, b) => b.length - a.length || a.localeCompare(b))
+                  .map((w) => (
+                    <span key={w} className="word-chip valid">
+                      {w.toUpperCase()}
+                    </span>
+                  ))}
+              </div>
+            </div>
+          )}
 
           {finished && solver && (
             <div className="end-screen">
