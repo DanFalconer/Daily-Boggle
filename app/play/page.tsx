@@ -325,7 +325,18 @@ export default function PlayPage() {
   const handleTileClick = (index: number) => {
     if (!running || finished) return;
     if (!grid) return;
-    if (selected.includes(index)) return;
+    const existingIndex = selected.indexOf(index);
+    // If tile is already in the path, treat click as undo/backtrack.
+    if (existingIndex !== -1) {
+      // Clicking the last tile removes just that tile.
+      if (existingIndex === selected.length - 1) {
+        setSelected((prev) => prev.slice(0, -1));
+      } else {
+        // Clicking an earlier tile trims the path back to that tile.
+        setSelected((prev) => prev.slice(0, existingIndex + 1));
+      }
+      return;
+    }
     if (selected.length === 0) {
       setSelected([index]);
       return;
@@ -341,7 +352,6 @@ export default function PlayPage() {
 
   const handleSubmit = () => {
     if (!running || finished) return;
-    if (!dict) return;
     const word = normalizeWord(currentWord);
     if (word.length < 3) {
       setSubmissions((prev) => [
@@ -358,10 +368,8 @@ export default function PlayPage() {
     let delta = 0;
     let status: Submission["status"] = "invalid";
 
-    if (!dict.has(word)) {
-      delta = 0;
-      status = "invalid";
-    } else if (foundWords.has(word)) {
+    // Treat any length-3+ word that can be built from the tiles as valid.
+    if (foundWords.has(word)) {
       delta = -1;
       status = "duplicate";
     } else {
@@ -452,6 +460,16 @@ export default function PlayPage() {
           </div>
         </div>
       </div>
+
+      {finished && (
+        <div className="finish-banner">
+          <span className="finish-banner-label">Round complete</span>
+          <span className="finish-banner-text">
+            Well done — you scored <strong>{score}</strong> point
+            {score === 1 ? "" : "s"} today.
+          </span>
+        </div>
+      )}
 
       {loadError && (
         <div style={{ fontSize: "0.8rem", opacity: 0.7, marginBottom: "0.5rem" }}>
@@ -602,7 +620,7 @@ export default function PlayPage() {
                         </span>
                       ))}
                     {foundWords.size === 0 && (
-                      <span style={{ opacity: 0.6 }}>No words this time.</span>
+                      <span className="muted-text">No words this time.</span>
                     )}
                   </div>
                 </div>
@@ -621,7 +639,7 @@ export default function PlayPage() {
                       </span>
                     ))}
                     {solver.allWords.length === 0 && (
-                      <span style={{ opacity: 0.6 }}>No dictionary words.</span>
+                      <span className="muted-text">No dictionary words.</span>
                     )}
                   </div>
                 </div>
