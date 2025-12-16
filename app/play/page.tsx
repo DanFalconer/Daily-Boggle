@@ -1,6 +1,11 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
+import { useSoundEffects } from '../hooks/useSoundEffects';
+import { Confetti } from '../components/Confetti';
+import { FeedbackToast, getRandomFeedback } from '../components/FeedbackToast';
+import { LeaderboardModal } from '../components/LeaderboardModal';
+import { getLeaderboardWithPlayer } from '../data/leaderboard';
 
 type Tile = string;
 type Grid = Tile[];
@@ -26,7 +31,7 @@ interface Submission {
   status: "new" | "duplicate" | "invalid";
 }
 
-const GAME_SECONDS = 120;
+const GAME_SECONDS = 60;
 
 function hashStringToSeed(str: string): number {
   let h = 1779033703 ^ str.length;
@@ -296,48 +301,79 @@ export default function PlayPage() {
   const [nameInput, setNameInput] = useState<string>("");
   const [showNameModal, setShowNameModal] = useState<boolean>(true);
   const [gameReady, setGameReady] = useState<boolean>(false);
+  
+  const [showConfetti, setShowConfetti] = useState(false);
+  const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
+  const [feedbackType, setFeedbackType] = useState<'success' | 'error' | 'warning'>('success');
+  const [showLeaderboard, setShowLeaderboard] = useState(false);
+  
+  const sounds = useSoundEffects();
+  
+  // Calculate leaderboard data
+  const leaderboardEntries = useMemo(() => {
+    if (!playerName) return [];
+    return getLeaderboardWithPlayer(playerName, score, foundWords.size);
+  }, [playerName, score, foundWords.size]);
 
-  // Check if already played today
+  // Check if already played today - only restore if name modal is closed
   useEffect(() => {
-    if (!puzzleId) return;
+    if (!puzzleId || showNameModal) return;
+    
     const raw = window.localStorage.getItem(STORAGE_PREFIX + puzzleId);
-    if (!raw) return;
+    
+    // If no saved result, ensure we're in a fresh state
+    if (!raw) {
+      setRestoredResult(null);
+      setFinished(false);
+      setRunning(false);
+      setGameReady(true);
+      return;
+    }
+    
     try {
       const parsed = JSON.parse(raw) as GameResult;
-      setRestoredResult(parsed);
-      setFinished(true);
-      setRunning(false);
-      setScore(parsed.score);
-      setFoundWords(new Set(parsed.foundWords));
-      setSubmissions(parsed.submissions);
+      // Only restore if there's actual valid data
+      if (parsed && typeof parsed.score === 'number' && Array.isArray(parsed.foundWords)) {
+        setRestoredResult(parsed);
+        setFinished(true);
+        setRunning(false);
+        setScore(parsed.score);
+        setFoundWords(new Set(parsed.foundWords));
+        setSubmissions(parsed.submissions || []);
+      } else {
+        // Invalid data, reset to fresh state
+        setRestoredResult(null);
+        setFinished(false);
+        setGameReady(true);
+      }
     } catch {
-      // ignore
+      // Parse error, reset to fresh state
+      setRestoredResult(null);
+      setFinished(false);
+      setGameReady(true);
     }
-  }, [puzzleId]);
+  }, [puzzleId, showNameModal]);
 
-  // Timer
+  // Timer - only runs when game is actively running
   useEffect(() => {
     if (!running || finished) return;
-    const start = Date.now();
-    const startLeft = timeLeft;
 
     const id = window.setInterval(() => {
-      const elapsed = Math.floor((Date.now() - start) / 1000);
-      const remaining = startLeft - elapsed;
-      if (remaining <= 0) {
-        setTimeLeft(0);
-        setRunning(false);
-        setFinished(true);
-        window.clearInterval(id);
-      } else {
-        setTimeLeft(remaining);
-      }
-    }, 250);
+      setTimeLeft((prev) => {
+        if (prev <= 1) {
+          setRunning(false);
+          setFinished(true);
+          sounds.playGameEnd();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
 
     return () => {
       window.clearInterval(id);
     };
-  }, [running, finished, timeLeft]);
+  }, [running, finished, sounds]);
 
   const currentWord = useMemo(() => {
     if (!grid || selected.length === 0) return "";
@@ -357,15 +393,18 @@ export default function PlayPage() {
         // Clicking an earlier tile trims the path back to that tile.
         setSelected((prev) => prev.slice(0, existingIndex + 1));
       }
+      sounds.playTileSelect();
       return;
     }
     if (selected.length === 0) {
       setSelected([index]);
+      sounds.playTileSelect();
       return;
     }
     const last = selected[selected.length - 1];
     if (!isAdjacent(last, index)) return;
     setSelected((prev) => [...prev, index]);
+    sounds.playTileSelect();
   };
 
   const handleClear = () => {
@@ -389,6 +428,9 @@ export default function PlayPage() {
       ]);
       setScore((prev) => Math.max(0, prev - 1));
       setSelected([]);
+      sounds.playInvalidWord();
+      setFeedbackType('error');
+      setFeedbackMessage(getRandomFeedback('error'));
       return;
     }
 
@@ -399,14 +441,31 @@ export default function PlayPage() {
       // Duplicate
       delta = -1;
       status = "duplicate";
+      sounds.playDuplicate();
+      setFeedbackType('warning');
+      setFeedbackMessage(getRandomFeedback('warning'));
     } else if (validWordSet.has(word)) {
       // Valid new word: in dictionary AND formable on this grid
       delta = word.length - 2;
       status = "new";
+      sounds.playValidWord();
+      setShowConfetti(true);
+      setFeedbackType('success');
+      // Vary message based on word length
+      if (word.length >= 7) {
+        setFeedbackMessage('INCREDIBLE!');
+      } else if (word.length >= 5) {
+        setFeedbackMessage('Fantastic!');
+      } else {
+        setFeedbackMessage(getRandomFeedback('success'));
+      }
     } else {
       // Invalid word
       delta = -1;
       status = "invalid";
+      sounds.playInvalidWord();
+      setFeedbackType('error');
+      setFeedbackMessage(getRandomFeedback('error'));
     }
 
     setScore((prev) => Math.max(0, prev + delta));
@@ -430,13 +489,17 @@ export default function PlayPage() {
   const handleStart = () => {
     if (!grid || !dictLoaded || !gameReady) return;
     if (restoredResult) return;
+    if (running || finished) return; // Already in progress or done
+    
+    // Reset all game state
     setTimeLeft(GAME_SECONDS);
     setScore(0);
     setFoundWords(new Set());
     setSubmissions([]);
     setSelected([]);
     setFinished(false);
-    setRunning(true);
+    sounds.playGameStart();
+    setRunning(true); // This triggers the timer to start
   };
 
   const handleShare = () => {
@@ -469,9 +532,16 @@ export default function PlayPage() {
   const canInteract = running && !finished;
 
   return (
-    <div className="card">
+    <>
+      <Confetti active={showConfetti} onComplete={() => setShowConfetti(false)} />
+      <FeedbackToast 
+        message={feedbackMessage} 
+        type={feedbackType} 
+        onComplete={() => setFeedbackMessage(null)} 
+      />
+      <div className="card">
       <div className="game-header">
-        <div>
+        <div className="header-left">
           <div className="pill">
             <span className="pill-label">Puzzle</span>
             <span className="pill-value">
@@ -479,7 +549,16 @@ export default function PlayPage() {
             </span>
           </div>
         </div>
-        <div style={{ display: "flex", gap: "0.4rem" }}>
+        <div className="header-right">
+          {!showNameModal && playerName && (
+            <button 
+              className="btn btn-ghost leaderboard-btn"
+              onClick={() => setShowLeaderboard(true)}
+              type="button"
+            >
+              🏆
+            </button>
+          )}
           <div className="pill">
             <span className="pill-label">Time</span>
             <span className="pill-value">{formatSeconds(timeLeft)}</span>
@@ -554,26 +633,24 @@ export default function PlayPage() {
       {!showNameModal && grid && (
         <>
           <div className="game-grid">
-            {!running && !finished && (
-              <div className="grid-overlay-text">
-                Ready to play? Tap Start to reveal today&apos;s letters.
-              </div>
-            )}
             {grid.map((tile, idx) => {
-              const isSelected = selected.includes(idx);
+              const selectionPosition = selected.indexOf(idx);
+              const isSelected = selectionPosition !== -1;
               const showLetters = running || finished;
+              
+              // Calculate color class based on position in selection (1-indexed, wraps at 10)
+              const colorClass = isSelected ? `selected-${(selectionPosition % 10) + 1}` : '';
+              
               const classes = [
                 "tile",
                 isSelected ? "selected" : "",
+                colorClass,
                 !canInteract ? "disabled" : "",
                 !showLetters ? "tile-hidden" : "",
               ]
                 .filter(Boolean)
                 .join(" ");
-              const order =
-                selected.findIndex((i) => i === idx) >= 0
-                  ? selected.findIndex((i) => i === idx) + 1
-                  : null;
+              
               return (
                 <button
                   key={idx}
@@ -583,8 +660,8 @@ export default function PlayPage() {
                   disabled={!canInteract}
                 >
                   <span>{showLetters ? tile : ""}</span>
-                  {order !== null && (
-                    <span className="tile-index">{order}</span>
+                  {isSelected && (
+                    <span className="tile-index">{selectionPosition + 1}</span>
                   )}
                 </button>
               );
@@ -599,10 +676,18 @@ export default function PlayPage() {
                 <span className="current-word-muted">Tap tiles to build a word</span>
               )}
             </div>
-            <div style={{ opacity: 0.6, fontSize: "0.85rem" }}>
+            <div>
               {currentWord.length > 0 ? `${currentWord.length} letters` : "\u00A0"}
             </div>
           </div>
+
+          {/* Pre-game prompt - shows below grid before start */}
+          {!running && !finished && !restoredResult && gameReady && (
+            <div className="pre-game-prompt">
+              <span className="pre-game-icon">▶</span>
+              <span className="pre-game-text">Tap Start to reveal today&apos;s letters</span>
+            </div>
+          )}
 
           <div className="buttons-row">
             <button
@@ -621,19 +706,23 @@ export default function PlayPage() {
             >
               Submit
             </button>
-            <button
-              type="button"
-              className="btn btn-ghost"
-              onClick={handleStart}
-              disabled={
-                running ||
-                !!restoredResult ||
-                !grid ||
-                !dictLoaded
-              }
-            >
-              {restoredResult ? "Played" : running ? "Running" : "Start"}
-            </button>
+            {/* Start button - only show when game hasn't started */}
+            {!running && !finished && !restoredResult && (
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={handleStart}
+                disabled={!grid || !dictLoaded || !gameReady}
+              >
+                Start
+              </button>
+            )}
+            {/* Show "Played" if already played today */}
+            {restoredResult && (
+              <button type="button" className="btn btn-ghost" disabled>
+                Played
+              </button>
+            )}
           </div>
 
           <div className="submissions">
@@ -694,7 +783,7 @@ export default function PlayPage() {
                 </span>
               </div>
               <div className="end-columns">
-                <div>
+                <div className="end-column">
                   <div className="list-title">You found</div>
                   <div className="word-list">
                     {Array.from(foundWords)
@@ -712,7 +801,7 @@ export default function PlayPage() {
                     )}
                   </div>
                 </div>
-                <div>
+                <div className="end-column">
                   <div className="list-title">All possible words</div>
                   <div className="word-list">
                     {solver.allWords.map((w) => (
@@ -736,16 +825,55 @@ export default function PlayPage() {
                 <button
                   type="button"
                   className="btn btn-secondary"
+                  onClick={() => setShowLeaderboard(true)}
+                >
+                  🏆 View Leaderboard
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
                   onClick={handleShare}
                 >
-                  Copy share text
+                  Copy Share Text
                 </button>
               </div>
             </div>
           )}
+
         </>
       )}
-    </div>
+
+      {/* DEV Clear Button - Always visible for testing */}
+      {process.env.NODE_ENV === 'development' && (
+        <button
+          type="button"
+          className="dev-clear-btn"
+          onClick={() => {
+            if (puzzleId) {
+              window.localStorage.removeItem(STORAGE_PREFIX + puzzleId);
+              setRestoredResult(null);
+              setFinished(false);
+              setRunning(false);
+              setTimeLeft(GAME_SECONDS);
+              setScore(0);
+              setFoundWords(new Set());
+              setSubmissions([]);
+              setSelected([]);
+              setGameReady(true);
+            }
+          }}
+        >
+          [DEV] Clear Today&apos;s Data & Play Again
+        </button>
+      )}
+      </div>
+      <LeaderboardModal
+        isOpen={showLeaderboard}
+        onClose={() => setShowLeaderboard(false)}
+        entries={leaderboardEntries}
+        dateLabel={dateInfo?.label ?? ''}
+      />
+    </>
   );
 }
 

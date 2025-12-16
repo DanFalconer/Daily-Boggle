@@ -18,9 +18,6 @@ return (
         <div className="app-container">
           <header className="app-header">
             <div className="app-title">Daily Boggle</div>
-            <div className="app-subtitle">
-              One 2-minute round per day (local only)
-            </div>
 </header>
           <main className="app-main">{children}</main>
 </div>
